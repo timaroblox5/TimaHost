@@ -1,7 +1,10 @@
 name: Setup Cloudflare WARP
 
+# Запуск по расписанию и вручную
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"  # Каждые 6 часов
 
 jobs:
   warp-setup:

@@ -1,19 +1,18 @@
 name: Setup Cloudflare WARP
 
-# Запуск по расписанию и вручную
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"  # Каждые 6 часов
+    - cron: "0 */6 * * *"  # Обновление каждые 6 часов
 
 jobs:
-  warp-setup:
+  warp-vpn:
     runs-on: self-hosted
     steps:
       - name: Install prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl lsb-release gnupg
+          sudo apt-get install -y curl lsb-release gnupg iproute2 net-tools
 
       - name: Add Cloudflare WARP repo
         run: |
@@ -23,11 +22,58 @@ jobs:
           sudo apt-get install -y cloudflare-warp
 
       - name: Enable IP forwarding
-        run: sudo sysctl -w net.ipv4.ip_forward=1
+        run: |
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
 
-      - name: Connect WARP Connector
+      - name: Disconnect old WARP if connected
+        run: |
+          if warp-cli status | grep "Connected"; then
+            echo "Disconnecting old WARP connector..."
+            sudo warp-cli disconnect
+          fi
+
+      - name: Connect new WARP Connector
         env:
           WARP_TOKEN: ${{ secrets.WARP_TOKEN }}
         run: |
           sudo warp-cli connector new $WARP_TOKEN
           sudo warp-cli connect
+
+      - name: Route all traffic through WARP
+        run: |
+          WARP_IF=$(warp-cli status | grep "Device:" | awk '{print $2}')
+          if [ -n "$WARP_IF" ]; then
+            echo "Routing all traffic via $WARP_IF..."
+            sudo ip route replace default dev $WARP_IF
+          else
+            echo "WARP interface not found!"
+          fi
+
+      - name: Verify connection
+        run: |
+          echo "WARP Status:"
+          warp-cli status
+          echo "Public IP check:"
+          curl -s https://ifconfig.me
+
+      - name: Ensure WARP auto-start on reboot
+        run: |
+          sudo tee /etc/systemd/system/warp-vpn.service > /dev/null <<EOF
+[Unit]
+Description=Cloudflare WARP VPN Auto-Reconnect
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bash -c '/usr/bin/warp-cli status | grep Connected || (/usr/bin/warp-cli connector new $WARP_TOKEN && /usr/bin/warp-cli connect)'
+Restart=always
+RestartSec=10
+Environment=WARP_TOKEN=${{ secrets.WARP_TOKEN }}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+          sudo systemctl daemon-reload
+          sudo systemctl enable warp-vpn.service
+          sudo systemctl start warp-vpn.service

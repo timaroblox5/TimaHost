@@ -1,4 +1,4 @@
-name: Persistent VPS 24/7 test
+name: Persistent VPS 24/7 Test
 
 on:
   workflow_dispatch:
@@ -89,7 +89,6 @@ jobs:
 
       - name: Smart sleep to finish before next cron
         run: |
-          # Cron запускает каждые 5 часов → спим чуть меньше
           SLEEP_SECONDS=$((4*3600 + 55*60))
           echo "Sleeping for $SLEEP_SECONDS seconds..."
           sleep $SLEEP_SECONDS
@@ -141,6 +140,6 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: peter-evans/workflow-dispatch@v2
         with:
-          workflow: Persistent VPS 24/7
+          workflow: "persistent-vps-24-7.yml"
           ref: main
           inputs: {}

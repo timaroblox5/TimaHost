@@ -1,0 +1,146 @@
+name: Persistent VPS 24/7 test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'  # каждые 5 часов
+
+jobs:
+  vps-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330  # 5.5 часов
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set hostname
+        run: sudo hostnamectl set-hostname biralo
+
+      - name: Download VPS backup
+        uses: actions/download-artifact@v4
+        with:
+          name: vps-backup
+          path: ./backup
+        continue-on-error: true
+
+      - name: Install prerequisites
+        run: |
+          sudo apt update
+          sudo apt install -y tmate curl unzip sudo net-tools neofetch tmux
+
+      - name: Install Tailscale
+        run: curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Restore backup
+        run: |
+          if [ -f ./backup/backup.zip ]; then
+            unzip -o ./backup/backup.zip -d /
+          else
+            echo "No backup found, starting fresh"
+          fi
+
+      - name: Restore Tailscale state
+        run: |
+          if [ -f ./backup/tailscaled.state ]; then
+            sudo mkdir -p /var/lib/tailscale
+            sudo cp ./backup/tailscaled.state /var/lib/tailscale/tailscaled.state
+            sudo chmod 600 /var/lib/tailscale/tailscaled.state
+          fi
+
+      - name: Start Tailscale if not running
+        run: |
+          if ! pgrep -x tailscaled >/dev/null; then
+            sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
+            sleep 8
+            sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname=biralo || echo "Tailscale already up"
+          else
+            echo "Tailscale already running"
+          fi
+
+      - name: Create user biralo
+        run: |
+          if ! id -u biralo >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash biralo
+            echo "biralo:biralo" | sudo chpasswd
+            sudo usermod -aG sudo biralo
+            echo "biralo ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/biralo
+          fi
+
+      - name: Start tmate session if not active
+        run: |
+          if [ ! -S "$HOME/.tmate.sock/ssh" ]; then
+            echo "Starting new tmate session"
+            tmux new-session -d -s tmate
+            tmate -S $HOME/.tmate.sock new-session -d
+          else
+            echo "Tmate session already active"
+          fi
+
+      - name: Show Tailscale IP and tmate info
+        run: |
+          echo "🔗 Tailscale IP:"
+          tailscale ip -4 || echo "Tailscale IP not found"
+          echo ""
+          if [ -S "$HOME/.tmate.sock/ssh" ]; then
+            echo "🔑 tmate SSH session:"
+            cat $HOME/.tmate.sock/ssh
+          fi
+
+      - name: Smart sleep to finish before next cron
+        run: |
+          # Cron запускает каждые 5 часов → спим чуть меньше
+          SLEEP_SECONDS=$((4*3600 + 55*60))
+          echo "Sleeping for $SLEEP_SECONDS seconds..."
+          sleep $SLEEP_SECONDS
+
+      - name: Backup VPS and Tailscale state
+        run: |
+          mkdir -p ./backup
+          sudo cp /var/lib/tailscale/tailscaled.state ./backup/tailscaled.state
+          neofetch --stdout > ./backup/system_info.txt
+          sudo chown -R $USER:$USER ./backup
+          zip -r backup.zip ./backup
+
+      - name: Upload backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: vps-backup
+          path: backup.zip
+
+      - name: Cleanup old backups
+        run: |
+          find ./backup -type f -name "*.zip" -mtime +7 -exec rm -f {} \;
+          echo "Old backups older than 7 days removed"
+
+      - name: Verify services
+        run: |
+          echo "Checking if Tailscale is up..."
+          if pgrep -x tailscaled >/dev/null; then
+            echo "✅ Tailscale running"
+          else
+            echo "❌ Tailscale not running"
+          fi
+          
+          echo "Checking tmate session..."
+          if [ -S "$HOME/.tmate.sock/ssh" ]; then
+            echo "✅ tmate active"
+          else
+            echo "❌ tmate not active"
+          fi
+
+      - name: Notify via GitHub Actions log
+        run: |
+          echo "Workflow finished successfully! 🎉"
+          echo "Tailscale IP: $(tailscale ip -4 || echo 'not found')"
+          if [ -S "$HOME/.tmate.sock/ssh" ]; then
+            echo "tmate SSH session: $(cat $HOME/.tmate.sock/ssh)"
+          fi
+
+      - name: Trigger next workflow run (only if manual)
+        if: github.event_name == 'workflow_dispatch'
+        uses: peter-evans/workflow-dispatch@v2
+        with:
+          workflow: Persistent VPS 24/7
+          ref: main
+          inputs: {}

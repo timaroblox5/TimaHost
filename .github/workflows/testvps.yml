@@ -1,4 +1,4 @@
-name: Persistent VPS 24/7 Test
+name: Self-Hosted VPS 24/7
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 330  # 5.5 часов
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set hostname
@@ -120,7 +120,7 @@ jobs:
           else
             echo "❌ Tailscale not running"
           fi
-          
+
           echo "Checking tmate session..."
           if [ -S "$HOME/.tmate.sock/ssh" ]; then
             echo "✅ tmate active"
@@ -140,5 +140,5 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: peter-evans/workflow-dispatch@v2
         with:
-          workflow: persistent-vps-24-7.yml
+          workflow: self-hosted.yml
           ref: main

@@ -1,79 +1,67 @@
-name: Setup Cloudflare WARP
+name: Setup Tailscale 24/7
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"  # Обновление каждые 6 часов
+    - cron: "0 */6 * * *"  # Проверка каждые 6 часов
 
 jobs:
-  warp-vpn:
+  tailscale-vpn:
     runs-on: self-hosted
     steps:
-      - name: Install prerequisites
+      - name: Install Tailscale
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl lsb-release gnupg iproute2 net-tools
+          curl -fsSL https://tailscale.com/install.sh | sh
 
-      - name: Add Cloudflare WARP repo
+      - name: Authenticate Tailscale (только при первом запуске)
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          curl https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update
-          sudo apt-get install -y cloudflare-warp
+          if ! sudo tailscale status 2>/dev/null | grep -q "Logged in"; then
+            echo "Первоначальная настройка Tailscale..."
+            sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --accept-routes --accept-dns --reset
+          else
+            echo "Tailscale уже настроен, пропускаем аутентификацию"
+          fi
+
+      - name: Ensure Tailscale is running
+        run: |
+          sudo tailscale up --accept-routes --accept-dns
 
       - name: Enable IP forwarding
         run: |
-          sudo sysctl -w net.ipv4.ip_forward=1
-          sudo sysctl -w net.ipv6.conf.all.forwarding=1
-
-      - name: Disconnect old WARP if connected
-        run: |
-          if warp-cli status | grep "Connected"; then
-            echo "Disconnecting old WARP connector..."
-            sudo warp-cli disconnect
-          fi
-
-      - name: Connect new WARP Connector
-        env:
-          WARP_TOKEN: ${{ secrets.WARP_TOKEN }}
-        run: |
-          sudo warp-cli connector new $WARP_TOKEN
-          sudo warp-cli connect
-
-      - name: Route all traffic through WARP
-        run: |
-          WARP_IF=$(warp-cli status | grep "Device:" | awk '{print $2}')
-          if [ -n "$WARP_IF" ]; then
-            echo "Routing all traffic via $WARP_IF..."
-            sudo ip route replace default dev $WARP_IF
-          else
-            echo "WARP interface not found!"
-          fi
+          echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+          echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
 
       - name: Verify connection
         run: |
-          echo "WARP Status:"
-          warp-cli status
-          echo "Public IP check:"
-          curl -s https://ifconfig.me
+          echo "Tailscale Status:"
+          sudo tailscale status
+          echo "Tailscale IP:"
+          sudo tailscale ip -4
 
-      - name: Ensure WARP auto-start on reboot
+      - name: Ensure Tailscale auto-start
         run: |
-          sudo tee /etc/systemd/system/warp-vpn.service > /dev/null <<EOF
+          sudo systemctl enable tailscaled
+          sudo systemctl start tailscaled
+
+      - name: Create persistent service (на всякий случай)
+        run: |
+          sudo tee /etc/systemd/system/tailscale-persistent.service > /dev/null <<EOF
 [Unit]
-Description=Cloudflare WARP VPN Auto-Reconnect
+Description=Tailscale Persistent VPN
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/bash -c '/usr/bin/warp-cli status | grep Connected || (/usr/bin/warp-cli connector new $WARP_TOKEN && /usr/bin/warp-cli connect)'
+ExecStart=/usr/bin/tailscale up --accept-routes --accept-dns
 Restart=always
 RestartSec=10
-Environment=WARP_TOKEN=${{ secrets.WARP_TOKEN }}
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
           sudo systemctl daemon-reload
-          sudo systemctl enable warp-vpn.service
-          sudo systemctl start warp-vpn.service
+          sudo systemctl enable tailscale-persistent.service
